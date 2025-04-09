@@ -60,6 +60,10 @@ namespace at::cuda {
   _(cuLinkComplete)                              \
   _(cuFuncSetAttribute)                          \
   _(cuFuncGetAttribute)                          \
+  _(cuFuncGetParamInfo)                          \
+  _(cuFuncGetName)                               \
+  _(cuGraphKernelNodeGetParams)                  \
+  _(cuFuncGetModule)
 
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 12000
 #define AT_FORALL_NVRTC_EXTENDED(_)              \
