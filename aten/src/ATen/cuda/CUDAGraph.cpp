@@ -773,6 +773,27 @@ bool is_equal(const cudaMemcpy3DParms& a, const cudaMemcpy3DParms& b) {
     return a.kind == b.kind;
 }
 
+#include <iostream>
+#include <iomanip>   // for std::hex, std::setw, std::setfill
+#include <cstddef>   // for std::size_t
+
+// Prints the first n bytes starting at 'data' as a hex string (e.g. "0a1f2b...")
+void printHex(const void* data, std::size_t n) {
+    // Treat the data as a sequence of unsigned bytes
+    const unsigned char* bytes = static_cast<const unsigned char*>(data);
+    
+    // Set up cout for hex, two digits per byte, zero-padded
+    std::cout << std::hex << std::setfill('0');
+    
+    for (std::size_t i = 0; i < n; ++i) {
+        // Each byte is cast to an unsigned int so it's printed as a number,
+        // then setw(2) ensures two hex digits (e.g. 0a, ff, etc.)
+        std::cout << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+    }
+    
+    // Go back to decimal for any further output
+    std::cout << std::dec;
+}
 
 
 bool graphs_equal(cudaGraph_t graph1, cudaGraph_t graph2) {
@@ -860,18 +881,27 @@ bool graphs_equal(cudaGraph_t graph1, cudaGraph_t graph2) {
       size_t q = 0;
       
       for (; globalContext().getNVRTC().cuFuncGetParamInfo(func1, q, &param_offset, &param_size) != CUDA_ERROR_INVALID_VALUE; q++) {
-              std::cout << "GALVEZ: " << q << " " << param_offset << " " << param_size << std::endl;
+        // std::cout << "GALVEZ: " << q << " " << param_offset << " " << param_size << std::endl;
       }
 
-      std::cout << "GALVEZ: number of parmeters " << q << std::endl;
+      // void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, 8, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(
+      // int,
+      // at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1},
+      // std::array<char*, 2ul>,
+      // TrivialOffsetCalculator<1, unsigned int>,
+      // TrivialOffsetCalculator<1, unsigned int>,
+      // at::native::memory::LoadWithCast<1>,
+      // at::native::memory::StoreWithCast<1>)
+
+      // std::cout << "GALVEZ: number of parmeters " << q << std::endl;
 
       // std::unordered_map<std::string, std::vector<ArgumentInformation>> type_info = get_argument_information({func_name});
-      std::vector<ArgumentInformation> type_info = get_argument_information(func1);
+      ArgumentInformation type_info = get_argument_information(func1);
       for (size_t param_index = 0;
            globalContext().getNVRTC().cuFuncGetParamInfo(func1, param_index, &param_offset, &param_size) != CUDA_ERROR_INVALID_VALUE; param_index++) {
-        std::cout << "GALVEZ: " << param_index << " " << param_offset << " " << param_size << std::endl;
+        // std::cout << "GALVEZ: " << param_index << " " << param_offset << " " << param_size << std::endl;
 
-        if (type_info.empty()) {
+        if (type_info.members.empty()) {
           if (param_index == 0) {
             TORCH_WARN("No type information for", func_name);
           }
@@ -888,17 +918,24 @@ bool graphs_equal(cudaGraph_t graph1, cudaGraph_t graph2) {
           // TORCH_INTERNAL_ASSERT(type_info.at(func_name).size() == 1);
           if (!is_equal(nodeParams1.kernelParams[param_index],
                         nodeParams2.kernelParams[param_index],
-                        std::move(type_info[param_index]))) {
+                        type_info.members[param_index].second)) {
 
             // TODO: Double check whether we have a void * "data" field.
             TORCH_WARN("graphs_equal: Have type information, but Kernel parameter mismatch at node index ", i,
                        ", parameter index ", param_index, " for function ", func_name);
             // check_differences(nodeParams1.kernelParams[param_index], nodeParams2.kernelParams[param_index], param_size);
-            std::vector<ArgumentInformation> type_info_dup = get_argument_information(func1);
+            // std::vector<ArgumentInformation> type_info_dup = get_argument_information(func1);
             TORCH_WARN("type info");
-            prettyPrintArgumentInfo(type_info_dup);
+            prettyPrintArgumentInfo(type_info);
             TORCH_WARN("end type info");
             is_equal_var = false;
+
+
+            std::cout << "First argument" << std::endl;
+            printHex(nodeParams1.kernelParams[param_index], param_size);
+            std::cout << "Second argument" << std::endl;
+            printHex(nodeParams2.kernelParams[param_index], param_size);
+            
             // return false;
           }
         }

@@ -95,20 +95,20 @@ Dwarf_Die get_type_follow_typedefs(Dwarf_Debug dbg, Dwarf_Die typeDie) {
 // Function declarations
 bool findFunctionWithLinkageName(Dwarf_Debug dbg, Dwarf_Die cu_die, 
                                const char* linkageName,
-                               std::vector<ArgumentInformation>& result);
+                               ArgumentInformation& result);
 void extractFunctionArguments(Dwarf_Debug dbg, Dwarf_Die function_die, 
-                           std::vector<ArgumentInformation>& result);
+                           ArgumentInformation& result);
 void processType(Dwarf_Debug dbg, Dwarf_Die type_die, 
-              std::vector<std::variant<BasicType, StructType, ArrayType>>& members);
+              std::variant<BasicType, StructType, ArrayType>& member);
 void processBasicType(Dwarf_Debug dbg, Dwarf_Die type_die, 
-                   std::vector<std::variant<BasicType, StructType, ArrayType>>& members);
-void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die, 
-                    std::vector<std::variant<BasicType, StructType, ArrayType>>& members);
+                      std::variant<BasicType, StructType, ArrayType>& member);
+void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die,
+                    std::variant<BasicType, StructType, ArrayType>& member);
 void processArrayType(Dwarf_Debug dbg, Dwarf_Die array_die, 
-                   std::vector<std::variant<BasicType, StructType, ArrayType>>& members);
+                   std::variant<BasicType, StructType, ArrayType>& member);
 int dwarf_attr_string(Dwarf_Die die, Dwarf_Half attr_code, char** result, Dwarf_Error* error);
 
-std::vector<ArgumentInformation>
+ArgumentInformation
 getArgumentInformation(const char* linkageName, void *buffer, size_t buffer_size) {
     int fd = memfd_create("galvezanonymous", MFD_CLOEXEC);
     if (fd == -1) {
@@ -143,7 +143,7 @@ getArgumentInformation(const char* linkageName, void *buffer, size_t buffer_size
     // outFile.close();
 
     // Result vector to return
-    std::vector<ArgumentInformation> result;
+    ArgumentInformation result;
     
     // Variables for error handling
     Dwarf_Error error = nullptr;
@@ -164,6 +164,10 @@ getArgumentInformation(const char* linkageName, void *buffer, size_t buffer_size
     
     // Iterate through compilation units
     Dwarf_Unsigned next_cu_offset;
+
+
+    bool ran_twice = false;
+
     while (true) {
         Dwarf_Die cu_die = nullptr;
         Dwarf_Unsigned cu_header_length = 0;
@@ -175,7 +179,7 @@ getArgumentInformation(const char* linkageName, void *buffer, size_t buffer_size
         Dwarf_Unsigned next_cu_header_offset = 0;
         Dwarf_Half cu_type = 0;
 
-        std::cout << "GALVEZ: while(true)" << std::endl;
+        // std::cout << "GALVEZ: while(true)" << std::endl;
 
         // Get next CU
         res = dwarf_next_cu_header_e(dbg, true, &cu_die, 
@@ -186,6 +190,11 @@ getArgumentInformation(const char* linkageName, void *buffer, size_t buffer_size
         if (res != DW_DLV_OK) {
             std::cout << "GALVEZ: no more CUs" << std::endl;
             break; // No more CUs or error
+        }
+
+        if (ran_twice) {
+          std::cout << "GALVEZ: ran twice!!!" << std::endl;
+          abort();
         }
         
         // Find function DIE with the specified linkage name
@@ -200,20 +209,26 @@ getArgumentInformation(const char* linkageName, void *buffer, size_t buffer_size
         
         // Move to the next CU
         next_cu_offset = next_cu_header_offset;
+
+        ran_twice = true;
     }
     
     // Clean up DWARF debug info
     dwarf_finish(dbg);
 
     std::cout << "GALVEZ: getArgumentInformation() done" << std::endl;
+
+    // if (result.empty()) {
+    //   std::cout << "GALVEZ: failed to get information of kernel was empty:" << std::endl;
+    // }
     
     return result;
 }
 
-std::vector<ArgumentInformation>
+ArgumentInformation
 getArgumentInformation(const char* linkageName, const std::string& elfPath) {
     // Result vector to return
-    std::vector<ArgumentInformation> result;
+    ArgumentInformation result;
     
     // Variables for error handling
     Dwarf_Error error = nullptr;
@@ -272,7 +287,7 @@ getArgumentInformation(const char* linkageName, const std::string& elfPath) {
 // Helper function to find a function with the specified linkage name
 bool findFunctionWithLinkageName(Dwarf_Debug dbg, Dwarf_Die cu_die, 
                                 const char* linkageName,
-                                std::vector<ArgumentInformation>& result) {
+                                ArgumentInformation& result) {
     if (!cu_die) {
       std::cout << "GALVEZ: cu_die is empty" << std::endl;
         return false;
@@ -334,7 +349,7 @@ bool findFunctionWithLinkageName(Dwarf_Debug dbg, Dwarf_Die cu_die,
 
 // Helper to extract function parameter information from a function DIE
 void extractFunctionArguments(Dwarf_Debug dbg, Dwarf_Die function_die, 
-                             std::vector<ArgumentInformation>& result) {
+                              ArgumentInformation& result) {
     Dwarf_Error error = nullptr;
     int res = DW_DLV_ERROR;
     
@@ -353,17 +368,14 @@ void extractFunctionArguments(Dwarf_Debug dbg, Dwarf_Die function_die,
         res = dwarf_tag(current_die, &tag, &error);
         if (res == DW_DLV_OK && tag == DW_TAG_formal_parameter) {
             // This is a function parameter, extract its information
-            ArgumentInformation argInfo;
-            argInfo.name = "param"; // Default name
-            argInfo.members = std::make_unique<std::vector<std::variant<BasicType, StructType, ArrayType>>>();
-            
             // Get parameter name
             char* name_str = nullptr;
             res = dwarf_attr_string(current_die, DW_AT_name, &name_str, &error);
-            if (res == DW_DLV_OK && name_str) {
-                argInfo.name = std::string(name_str);
+            if (res != DW_DLV_OK && name_str) {
+                // argInfo.name = std::string(name_str);
             }
             
+            result.members.emplace_back(std::string(name_str), std::variant<BasicType, StructType, ArrayType>());
             // Get parameter type
             Dwarf_Attribute type_attr = nullptr;
             res = dwarf_attr(current_die, DW_AT_type, &type_attr, &error);
@@ -378,7 +390,7 @@ void extractFunctionArguments(Dwarf_Debug dbg, Dwarf_Die function_die,
                     res = dwarf_offdie_b(dbg, type_offset, is_info, &type_die, &error);
                     if (res == DW_DLV_OK) {
                         // Process the type
-                        processType(dbg, type_die, *argInfo.members);
+                      processType(dbg, type_die, result.members.back().second);
                         dwarf_dealloc_die(type_die);
                     }
                 }
@@ -386,7 +398,7 @@ void extractFunctionArguments(Dwarf_Debug dbg, Dwarf_Die function_die,
             }
             
             // Add the parameter information to the result
-            result.push_back(std::move(argInfo));
+            // result.push_back(std::move(argInfo));
         }
         
         // Move to next sibling
@@ -404,7 +416,7 @@ void extractFunctionArguments(Dwarf_Debug dbg, Dwarf_Die function_die,
 
 // Helper function to extract type information
 void processType(Dwarf_Debug dbg, Dwarf_Die type_die, 
-                std::vector<std::variant<BasicType, StructType, ArrayType>>& members) {
+                 std::variant<BasicType, StructType, ArrayType>& member) {
     // Follow typedefs to get the actual type
     Dwarf_Die actual_type_die = get_type_follow_typedefs(dbg, type_die);
     if (!actual_type_die) {
@@ -426,22 +438,22 @@ void processType(Dwarf_Debug dbg, Dwarf_Die type_die,
         case DW_TAG_base_type:
         case DW_TAG_pointer_type:
         case DW_TAG_reference_type:
-            processBasicType(dbg, actual_type_die, members);
+            processBasicType(dbg, actual_type_die, member);
             break;
             
         case DW_TAG_structure_type:
         case DW_TAG_class_type:
         case DW_TAG_union_type:
-            processStructType(dbg, actual_type_die, members);
+            processStructType(dbg, actual_type_die, member);
             break;
             
         case DW_TAG_array_type:
-            processArrayType(dbg, actual_type_die, members);
+            processArrayType(dbg, actual_type_die, member);
             break;
             
         default:
             // For other types, we'll just treat them as basic types
-            processBasicType(dbg, actual_type_die, members);
+            processBasicType(dbg, actual_type_die, member);
             break;
     }
     
@@ -453,24 +465,36 @@ void processType(Dwarf_Debug dbg, Dwarf_Die type_die,
 
 // Process a basic type or pointer/reference
 void processBasicType(Dwarf_Debug dbg, Dwarf_Die type_die, 
-                     std::vector<std::variant<BasicType, StructType, ArrayType>>& members) {
+                     std::variant<BasicType, StructType, ArrayType>& member) {
     Dwarf_Error error = nullptr;
     BasicType basicType;
     
     // Check if it's a pointer or reference
     Dwarf_Half tag = 0;
     int res = dwarf_tag(type_die, &tag, &error);
+    // TODO: I'm not sure that it is correct to call this a pointer
+    // type if it's a reference type...
     basicType.is_pointer = (tag == DW_TAG_pointer_type || tag == DW_TAG_reference_type);
 
     // Get type name
     char* name_str = nullptr;
     res = dwarf_attr_string(type_die, DW_AT_name, &name_str, &error);
     if (res == DW_DLV_OK && name_str) {
-        basicType.name = std::string(name_str);
+        basicType.type_name = std::string(name_str);
     } else if (tag == DW_TAG_pointer_type || tag == DW_TAG_reference_type) {
-        basicType.name = "*";
+        // int res = dwarf_attr(type_die, DW_AT_type, &typeAttr, &error);
+        // if (dwarf_global_formref(typeAttr, &typeOffset, &error) == DW_DLV_OK) {
+        //   bool is_info = dwarf_get_die_infotypes_flag(typeDie);
+        //   if (dwarf_offdie_b(dbg, typeOffset, 
+        //                      is_info, &typeDieTmp, &error) == DW_DLV_OK) {
+        //     get_type_follow_typedefs(dbg, typeDieTmp);
+        //     res = dwarf_attr_string(type_die, DW_AT_name, &name_str, &error);
+        //     type_die
+        //   }
+        // }
+        basicType.type_name =  "*";
     } else {
-        basicType.name = "unnamed_type";
+        basicType.type_name = "unnamed_type";
     }
     
     // Get byte size
@@ -489,12 +513,12 @@ void processBasicType(Dwarf_Debug dbg, Dwarf_Die type_die,
     basicType.offset = 0; // Default to 0 for standalone types
     
     // Add to the members list
-    members.push_back(basicType);
+    member = basicType;
 }
 
 // Process a struct/class/union type
 void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die, 
-                      std::vector<std::variant<BasicType, StructType, ArrayType>>& members) {
+                      std::variant<BasicType, StructType, ArrayType>& member) {
     Dwarf_Error error = nullptr;
     StructType structType;
     
@@ -502,9 +526,9 @@ void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die,
     char* name_str = nullptr;
     int res = dwarf_attr_string(struct_die, DW_AT_name, &name_str, &error);
     if (res == DW_DLV_OK && name_str) {
-        structType.name = std::string(name_str);
+        structType.type_name = std::string(name_str);
     } else {
-        structType.name = "unnamed_struct";
+        structType.type_name = "unnamed_struct";
     }
 
 
@@ -514,7 +538,7 @@ void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die,
     structType.size = size;
     
     // Initialize members vector
-    structType.members = std::make_unique<std::vector<std::variant<BasicType, StructType, ArrayType>>>();
+    // structType.members = std::vector<std::variant<BasicType, StructType, ArrayType>>();
     
     // Process struct members
     Dwarf_Die child = nullptr;
@@ -601,39 +625,44 @@ void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die,
                             }
                             
                             // Now process the member type, but we need to create a vector for its members
-                            std::vector<std::variant<BasicType, StructType, ArrayType>> member_data;
+                            std::variant<BasicType, StructType, ArrayType> member_data;
                             processType(dbg, type_die, member_data);
                             
                             // Update the offset of the first member based on the location
-                            if (!member_data.empty()) {
-                                std::visit([member_offset](auto&& arg) {
-                                    using T = std::decay_t<decltype(arg)>;
-                                    if constexpr (std::is_same_v<T, BasicType>) {
-                                        arg.offset = member_offset;
-                                    } else if constexpr (std::is_same_v<T, StructType>) {
-                                        // For struct members, we need to adjust all member offsets
-                                        if (arg.members && !arg.members->empty()) {
-                                            for (auto& submember : *(arg.members)) {
-                                                std::visit([member_offset](auto&& subarg) {
-                                                    using SubT = std::decay_t<decltype(subarg)>;
-                                                    if constexpr (std::is_same_v<SubT, BasicType>) {
-                                                        subarg.offset += member_offset;
-                                                    }
-                                                    // Nested structs would need deeper recursion
-                                                }, submember);
-                                            }
-                                        }
-                                    } else if constexpr (std::is_same_v<T, ArrayType>) {
-                                        // For array members, we need to handle this differently
-                                        // This is simplified; real implementation would be more complex
-                                    }
-                                }, member_data.front());
+                            std::visit([member_offset](auto&& arg) {
+                              using T = std::decay_t<decltype(arg)>;
+                              if constexpr (std::is_same_v<T, BasicType>) {
+                                arg.offset = member_offset;
+                              } else if constexpr (std::is_same_v<T, StructType>) {
+                                // For struct members, we need to adjust all member offsets
+                                if (!arg.members.empty()) {
+                                  for (auto& submember : arg.members) {
+                                    std::visit([member_offset](auto&& subarg) {
+                                      using SubT = std::decay_t<decltype(subarg)>;
+                                      if constexpr (std::is_same_v<SubT, BasicType>) {
+                                        subarg.offset += member_offset;
+                                      }
+                                      // Nested structs would need deeper recursion
+                                    }, submember.second);
+                                  }
+                                }
+                              } else if constexpr (std::is_same_v<T, ArrayType>) {
+                                // For array members, we need to handle this differently
+                                // This is simplified; real implementation would be more complex
+                              }
+                            }, member_data);
+
+
+                            std::string member_name;
+                            res = dwarf_attr_string(current_die, DW_AT_name, &name_str, &error);
+                            if (res == DW_DLV_OK) {
+                              member_name = name_str;
+                            } else {
+                              member_name = "Could not get member name";
                             }
                             
                             // Add all the member data to the struct
-                            for (auto& member_item : member_data) {
-                                structType.members->push_back(std::move(member_item));
-                            }
+                            structType.members.emplace_back(member_name, member_data);
                             
                             dwarf_dealloc_die(type_die);
                         }
@@ -656,16 +685,41 @@ void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die,
     }
     
     // Add the struct to the members list
-    members.push_back(std::move(structType));
+    member = structType;
+}
+
+
+using In  = std::variant<BasicType, StructType, ArrayType>;
+using Out = std::variant<BasicType, StructType>;
+
+// helper for overloaded lambdas
+template<class... Fs> struct overloaded : Fs... { using Fs::operator()...; };
+template<class... Fs> overloaded(Fs...) -> overloaded<Fs...>;
+
+Out filter(In const& in) {
+    return std::visit(overloaded {
+        // BasicType  → keep as-is
+        [](BasicType const& b) -> Out { 
+            return b; 
+        },
+        // StructType → keep as-is
+        [](StructType const& s) -> Out { 
+            return s; 
+        },
+        // ArrayType  → error
+        [](ArrayType const&) -> Out { 
+            throw std::runtime_error("ArrayType not allowed here"); 
+        }
+    }, in);
 }
 
 // Process an array type
 void processArrayType(Dwarf_Debug dbg, Dwarf_Die array_die, 
-                     std::vector<std::variant<BasicType, StructType, ArrayType>>& members) {
+                     std::variant<BasicType, StructType, ArrayType>& member) {
     Dwarf_Error error = nullptr;
     ArrayType arrayType;
     
-    arrayType.name = "array";
+    arrayType.type_name = "array";
     arrayType.num_elements = 0;
     
     // Get the element type
@@ -682,14 +736,10 @@ void processArrayType(Dwarf_Debug dbg, Dwarf_Die array_die,
             res = dwarf_offdie_b(dbg, type_offset, is_info, &type_die, &error);
             if (res == DW_DLV_OK) {
                 // We need to create a vector for the element type
-                std::vector<std::variant<BasicType, StructType, ArrayType>> element_data;
+                std::variant<BasicType, StructType, ArrayType> element_data;
                 processType(dbg, type_die, element_data);
-                
-                // Now wrap this in a smart pointer
-                if (!element_data.empty()) {
-                    arrayType.element_type = std::make_unique<std::variant<BasicType, StructType, ArrayType>>(
-                                                                                                              std::move(element_data.front()));
-                }
+
+                arrayType.element_type = filter(element_data);
                 
                 dwarf_dealloc_die(type_die);
             }
@@ -747,7 +797,7 @@ void processArrayType(Dwarf_Debug dbg, Dwarf_Die array_die,
     }
     
     // Add the array to the members list
-    members.push_back(std::move(arrayType));
+    member = arrayType;
 }
 
 // Helper function to get a stringified value from an attribute
@@ -791,7 +841,7 @@ struct VariantPrinter {
 // Print operator for BasicType
 std::ostream& operator<<(std::ostream& os, const BasicType& bt) {
     os << "BasicType { ";
-    os << "name: \"" << bt.name << "\", ";
+    os << "type_name: \"" << bt.type_name << "\", ";
     os << "offset: " << bt.offset << ", ";
     os << "size: " << bt.size << ", ";
     os << "is_pointer: " << (bt.is_pointer ? "true" : "false");
@@ -801,14 +851,15 @@ std::ostream& operator<<(std::ostream& os, const BasicType& bt) {
 
 // Print operator for StructType
 std::ostream& operator<<(std::ostream& os, const StructType& st) {
-    os << "StructType { name: \"" << st.name << "\"";
+    os << "StructType { type_name: \"" << st.type_name << "\"";
     
-    if (st.members && !st.members->empty()) {
+    if (!st.members.empty()) {
         os << ", members: [\n";
         
-        for (size_t i = 0; i < st.members->size(); ++i) {
-            std::visit(VariantPrinter(os, 1), (*st.members)[i]);
-            if (i < st.members->size() - 1) {
+        for (size_t i = 0; i < st.members.size(); ++i) {
+            os << st.members[i].first << ": ";
+            std::visit(VariantPrinter(os, 1), st.members[i].second);
+            if (i < st.members.size() - 1) {
                 os << ",";
             }
             os << "\n";
@@ -826,32 +877,25 @@ std::ostream& operator<<(std::ostream& os, const StructType& st) {
 // Print operator for ArrayType
 std::ostream& operator<<(std::ostream& os, const ArrayType& at) {
     os << "ArrayType { ";
-    os << "name: \"" << at.name << "\", ";
+    os << "type_name: \"" << at.type_name << "\", ";
     os << "num_elements: " << at.num_elements;
     
-    if (at.element_type) {
-        os << ", element_type: ";
-        std::visit(VariantPrinter(os, 0), *at.element_type);
-    } else {
-        os << ", element_type: null";
-    }
+    os << ", element_type: ";
+    std::visit(VariantPrinter(os, 0), at.element_type);
     
     os << " }";
     return os;
 }
 
 
-void prettyPrintArgumentInfo(const std::vector<ArgumentInformation>& args) {
-    if (args.empty()) {
+void prettyPrintArgumentInfo(const ArgumentInformation& args) {
+    if (args.members.empty()) {
         std::cout << "No arguments found." << std::endl;
         return;
     }
     
     std::cout << "Arguments information:" << std::endl;
-    for (size_t i = 0; i < args.size(); ++i) {
-        std::cout << "Argument " << (i + 1) << ":" << std::endl;
-        std::cout << args[i] << std::endl;
-    }
+    std::cout << args << std::endl;
 }
 
 
@@ -865,7 +909,7 @@ int collect_so_file_elf_paths(struct dl_phdr_info *info, size_t size, void *data
 }
 
 
-std::unordered_map<std::string, std::vector<ArgumentInformation>>
+std::unordered_map<std::string, ArgumentInformation>
 get_argument_information(const std::vector<std::string> &function_names) {
   std::vector<const char*> paths;
   dl_iterate_phdr(collect_so_file_elf_paths, &paths);
@@ -874,12 +918,12 @@ get_argument_information(const std::vector<std::string> &function_names) {
     std::cout << "GALVEZ: SO path=" << path << std::endl;
   }
   
-  std::unordered_map<std::string, std::vector<ArgumentInformation>> function_to_data;
+  std::unordered_map<std::string, ArgumentInformation> function_to_data;
   for(auto&& function_name: function_names) {
     for(auto&& path: paths) {
-      std::vector<ArgumentInformation> type_information = getArgumentInformation(function_name.c_str(), path);
+      ArgumentInformation type_information = getArgumentInformation(function_name.c_str(), path);
       // TODO: What if the function takes no arguments
-      if (!type_information.empty()) {
+      if (!type_information.members.empty()) {
         function_to_data.emplace(function_name, std::move(type_information));
         break;
       }
@@ -888,7 +932,7 @@ get_argument_information(const std::vector<std::string> &function_names) {
   return function_to_data;
 }
 
-std::vector<ArgumentInformation>
+ArgumentInformation
 get_argument_information(CUfunction func) {
   const char* func_name;
   AT_CUDA_DRIVER_CHECK(
@@ -905,12 +949,19 @@ get_argument_information(CUfunction func) {
   // void *void_image = reinterpret_cast<void*>(image);
   // module_get_image(module, &void_image, &image_size);
 
-std::vector<ArgumentInformation> type_information = getArgumentInformation(func_name, void_image, image_size);
+  ArgumentInformation type_information = getArgumentInformation(func_name, void_image, image_size);
 // delete image;
   return type_information;
 }
 
 
+auto conversion_visitor = [](auto&& value) {
+  using T = std::decay_t<decltype(value)>;
+  return std::variant<BasicType, StructType, ArrayType>{
+    std::in_place_type<T>,
+    std::forward<decltype(value)>(value) };
+ };
+      
 bool sizeof_type(const std::variant<BasicType, StructType, ArrayType>& type_info) {
   return std::visit([](auto&& arg) {
     using T = std::decay_t<decltype(arg)>;
@@ -924,22 +975,32 @@ bool sizeof_type(const std::variant<BasicType, StructType, ArrayType>& type_info
       // TODO: Fill this out properly!!!
       return arg.size;  // offsetof_type(arg.members->back()) + sizeof_type(arg.members->back())
     } else if constexpr (std::is_same_v<T, ArrayType>) {
-      return arg.num_elements * sizeof_type(*arg.element_type);
+
+
+      return arg.num_elements * sizeof_type(std::visit(conversion_visitor, arg.element_type));
     }
   }, type_info);
 }
 
 bool is_equal(char *arg1, char *arg2,
               const std::variant<BasicType, StructType, ArrayType>& type_info,
-              size_t array_index, size_t array_element_size) {
-  return std::visit([arg1, arg2, &array_index, &array_element_size](auto&& arg) {
+              size_t array_index, size_t array_element_size, bool is_last_member_of_struct) {
+  return std::visit([arg1, arg2, &array_index, &array_element_size, &is_last_member_of_struct](auto&& arg) {
     using T = std::decay_t<decltype(arg)>;
     if constexpr (std::is_same_v<T, BasicType>) {
-      return std::memcmp(arg1 + arg.offset + array_index * array_element_size,
-                         arg2 + arg.offset + array_index * array_element_size, arg.size) == 0;
+      if (is_last_member_of_struct && arg.is_pointer) {
+        // not always true, but works around a tricky situation with lambdas.
+        return true;
+      } else {
+        // this strategy does not work if you have an array folloed by an array. Whoops...
+        return std::memcmp(arg1 + arg.offset + array_index * array_element_size,
+                           arg2 + arg.offset + array_index * array_element_size, arg.size) == 0;
+        
+      }
     } else if constexpr (std::is_same_v<T, StructType>) {
-      for (auto&& member: *arg.members) {
-        if (!is_equal(arg1, arg2, member, array_index, array_element_size)) {
+      for (size_t i = 0; i < arg.members.size(); ++i) {
+        if (!is_equal(arg1, arg2, arg.members[i].second, array_index, array_element_size,
+                      i == arg.members.size() - 1)) {
           return false;
         }
       }
@@ -947,7 +1008,8 @@ bool is_equal(char *arg1, char *arg2,
     } else if constexpr (std::is_same_v<T, ArrayType>) {
       TORCH_INTERNAL_ASSERT(array_index == 0, "Don't support nested arrays at this time.");
       for (std::size_t i = 0; i < arg.num_elements; ++i) {
-        if (!is_equal(arg1, arg2, *arg.element_type, i, sizeof_type(*arg.element_type))) {
+        auto &&up_cast = std::visit(conversion_visitor, arg.element_type);
+        if (!is_equal(arg1, arg2, up_cast, i, sizeof_type(up_cast), false)) {
           return false;
         }
       }
@@ -956,9 +1018,9 @@ bool is_equal(char *arg1, char *arg2,
   }, type_info);
 }
 
-bool is_equal(void *arg1, void *arg2, ArgumentInformation info) {
+bool is_equal(void *arg1, void *arg2, std::variant<BasicType, StructType, ArrayType> info) {
   // const std::variant<BasicType, StructType, ArrayType> vinfo(std::move(info));
-  return is_equal((char *)arg1, (char *)arg2, std::move(info), 0, 0);
+  return is_equal((char *)arg1, (char *)arg2, info, 0, 0, false);
   // for (size_t i = 0; i < info.members->size(); ++i) {
   //   if (!is_equal((char *)arg1, (char *)arg2, info, 0, 0)) {
   //     return false;

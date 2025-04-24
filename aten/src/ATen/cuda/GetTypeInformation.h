@@ -1,9 +1,12 @@
 #pragma once
 
 #include <cuda.h>
+#include <c10/util/flat_hash_map.h>
 
+// there is no name for BasicTypes that sit within Arrays. This is a
+// mistake on my part.
 struct BasicType {
-  std::string name;
+  std::string type_name;
   size_t offset;
   size_t size;
   bool is_pointer;
@@ -13,32 +16,40 @@ struct ArrayType;
 
 // StructType has no copy constructor because of the presence of unique_ptr
 struct StructType {
-  std::string name;
-  std::unique_ptr<std::vector<std::variant<BasicType, StructType, ArrayType>>> members;
+  std::string type_name;
+  // std::unique_ptr<std::vector<std::variant<BasicType, StructType, ArrayType>>> members;
+  std::vector<std::pair<std::string, std::variant<BasicType, StructType, ArrayType>>> members;
   // we need a size field because structs can have tail padding.
   size_t size;
 };
 
 struct ArrayType {
-  std::string name;
-  std::unique_ptr<std::variant<BasicType, StructType, ArrayType>> element_type;
+  std::string type_name;
+  // dwarf debug information will never allow an array to be nested
+  // within an array. Instead, you will just have multiple
+  // "subranges".
+  std::variant<BasicType, StructType> element_type;
+  // std::unique_ptr<std::variant<BasicType, StructType, ArrayType>> element_type;
   size_t num_elements;
 };
 
+// in this case, the first element of each pair in members refers to
+// the name of the argument. "type_name" has no meaning. "size" also
+// has no meaning.
 using ArgumentInformation = StructType;
 
-std::vector<ArgumentInformation>
+ArgumentInformation
 getArgumentInformation(const char* linkageName, const std::string& elfPath);
 
-std::vector<ArgumentInformation>
+ArgumentInformation
 getArgumentInformation(const char* linkageName, void *buffer, size_t buffer_size);
 
-std::unordered_map<std::string, std::vector<ArgumentInformation>>
+std::unordered_map<std::string, ArgumentInformation>
 get_argument_information(const std::vector<std::string> &function_names);
 
-std::vector<ArgumentInformation>
+ArgumentInformation
 get_argument_information(CUfunction func);
 
-bool is_equal(void *arg1, void *arg2, ArgumentInformation info);
+bool is_equal(void *arg1, void *arg2, std::variant<BasicType, StructType, ArrayType> info);
 
-void prettyPrintArgumentInfo(const std::vector<ArgumentInformation>& args);
+void prettyPrintArgumentInfo(const ArgumentInformation& args);
