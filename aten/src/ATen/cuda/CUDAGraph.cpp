@@ -933,9 +933,10 @@ bool graphs_equal(cudaGraph_t graph1, cudaGraph_t graph2) {
 
             std::cout << "First argument" << std::endl;
             printHex(nodeParams1.kernelParams[param_index], param_size);
+            std::cout << std::endl;
             std::cout << "Second argument" << std::endl;
             printHex(nodeParams2.kernelParams[param_index], param_size);
-            
+            std::cout << std::endl;
             // return false;
           }
         }

@@ -51,7 +51,13 @@ int memfd_create(const char *name, unsigned int flags) {
     return syscall(SYS_memfd_create, name, flags);
 }
 
-
+auto conversion_visitor = [](auto&& value) {
+  using T = std::decay_t<decltype(value)>;
+  return std::variant<BasicType, StructType, ArrayType>{
+    std::in_place_type<T>,
+    std::forward<decltype(value)>(value) };
+ };
+      
 Dwarf_Die get_type_follow_typedefs(Dwarf_Debug dbg, Dwarf_Die typeDie) {
   Dwarf_Half typeTag;
   Dwarf_Error error;
@@ -634,21 +640,9 @@ void processStructType(Dwarf_Debug dbg, Dwarf_Die struct_die,
                               if constexpr (std::is_same_v<T, BasicType>) {
                                 arg.offset = member_offset;
                               } else if constexpr (std::is_same_v<T, StructType>) {
-                                // For struct members, we need to adjust all member offsets
-                                if (!arg.members.empty()) {
-                                  for (auto& submember : arg.members) {
-                                    std::visit([member_offset](auto&& subarg) {
-                                      using SubT = std::decay_t<decltype(subarg)>;
-                                      if constexpr (std::is_same_v<SubT, BasicType>) {
-                                        subarg.offset += member_offset;
-                                      }
-                                      // Nested structs would need deeper recursion
-                                    }, submember.second);
-                                  }
-                                }
+                                arg.offset = member_offset;
                               } else if constexpr (std::is_same_v<T, ArrayType>) {
-                                // For array members, we need to handle this differently
-                                // This is simplified; real implementation would be more complex
+                                arg.offset = member_offset;
                               }
                             }, member_data);
 
@@ -818,6 +812,11 @@ std::ostream& operator<<(std::ostream& os, const BasicType& bt);
 std::ostream& operator<<(std::ostream& os, const StructType& st);
 std::ostream& operator<<(std::ostream& os, const ArrayType& at);
 
+// Helper function to print indentation
+inline std::string indent(int level) {
+    return std::string(level * 2, ' ');
+}
+
 // Generic visitor for std::variant printing
 struct VariantPrinter {
     std::ostream& os;
@@ -826,15 +825,15 @@ struct VariantPrinter {
     VariantPrinter(std::ostream& os, int indent_level) : os(os), indent_level(indent_level) {}
     
     void operator()(const BasicType& bt) const {
-        os << std::string(indent_level * 2, ' ') << bt;
+        os << bt;
     }
     
     void operator()(const StructType& st) const {
-        os << std::string(indent_level * 2, ' ') << st;
+        os << st;
     }
     
     void operator()(const ArrayType& at) const {
-        os << std::string(indent_level * 2, ' ') << at;
+        os << at;
     }
 };
 
@@ -857,8 +856,13 @@ std::ostream& operator<<(std::ostream& os, const StructType& st) {
         os << ", members: [\n";
         
         for (size_t i = 0; i < st.members.size(); ++i) {
-            os << st.members[i].first << ": ";
-            std::visit(VariantPrinter(os, 1), st.members[i].second);
+            os << indent(1) << st.members[i].first << ": ";
+            
+            // Use a new VariantPrinter with increased indent level
+            std::visit([&os, i](const auto& value) {
+                os << value;
+            }, st.members[i].second);
+            
             if (i < st.members.size() - 1) {
                 os << ",";
             }
@@ -881,13 +885,57 @@ std::ostream& operator<<(std::ostream& os, const ArrayType& at) {
     os << "num_elements: " << at.num_elements;
     
     os << ", element_type: ";
-    std::visit(VariantPrinter(os, 0), at.element_type);
+    std::visit([&os](const auto& value) {
+        os << value;
+    }, at.element_type);
     
     os << " }";
     return os;
 }
 
+// Specialized print function with proper indentation for nested structures
+void prettyPrintType(std::ostream& os, const std::variant<BasicType, StructType, ArrayType>& type, int level = 0) {
+    std::visit(overloaded {
+        [&os, level](const BasicType& bt) {
+            os << indent(level) << bt;
+        },
+        [&os, level](const StructType& st) {
+            os << indent(level) << "StructType { type_name: \"" << st.type_name << "\"";
+            
+            if (!st.members.empty()) {
+                os << ", members: [\n";
+                
+                for (size_t i = 0; i < st.members.size(); ++i) {
+                    os << indent(level + 1) << st.members[i].first << ": ";
+                    prettyPrintType(os, st.members[i].second, level + 2);
+                    
+                    if (i < st.members.size() - 1) {
+                        os << ",";
+                    }
+                    os << "\n";
+                }
+                
+                os << indent(level) << "]";
+            } else {
+                os << ", members: []";
+            }
+            
+            os << " }";
+        },
+        [&os, level](const ArrayType& at) {
+            os << indent(level) << "ArrayType { ";
+            os << "type_name: \"" << at.type_name << "\", ";
+            os << "num_elements: " << at.num_elements;
+            
+            os << ", element_type: ";
+            prettyPrintType(os, std::visit(conversion_visitor, at.element_type), level + 1);
+            
+            os << " }";
+        }
+    }, type);
+}
 
+// Updated prettyPrintArgumentInfo to use the new formatting
 void prettyPrintArgumentInfo(const ArgumentInformation& args) {
     if (args.members.empty()) {
         std::cout << "No arguments found." << std::endl;
@@ -895,8 +943,115 @@ void prettyPrintArgumentInfo(const ArgumentInformation& args) {
     }
     
     std::cout << "Arguments information:" << std::endl;
-    std::cout << args << std::endl;
+    
+    std::cout << "StructType { type_name: \"" << args.type_name << "\"";
+    
+    if (!args.members.empty()) {
+        std::cout << ", members: [\n";
+        
+        for (size_t i = 0; i < args.members.size(); ++i) {
+            std::cout << indent(1) << args.members[i].first << ": ";
+            prettyPrintType(std::cout, args.members[i].second, 1);
+            
+            if (i < args.members.size() - 1) {
+                std::cout << ",";
+            }
+            std::cout << "\n";
+        }
+        
+        std::cout << "  ]";
+    } else {
+        std::cout << ", members: []";
+    }
+    
+    std::cout << " }" << std::endl;
 }
+
+
+// // Forward declarations for the print operators
+// std::ostream& operator<<(std::ostream& os, const BasicType& bt);
+// std::ostream& operator<<(std::ostream& os, const StructType& st);
+// std::ostream& operator<<(std::ostream& os, const ArrayType& at);
+
+// // Generic visitor for std::variant printing
+// struct VariantPrinter {
+//     std::ostream& os;
+//     int indent_level;
+    
+//     VariantPrinter(std::ostream& os, int indent_level) : os(os), indent_level(indent_level) {}
+    
+//     void operator()(const BasicType& bt) const {
+//         os << std::string(indent_level * 2, ' ') << bt;
+//     }
+    
+//     void operator()(const StructType& st) const {
+//         os << std::string(indent_level * 2, ' ') << st;
+//     }
+    
+//     void operator()(const ArrayType& at) const {
+//         os << std::string(indent_level * 2, ' ') << at;
+//     }
+// };
+
+// // Print operator for BasicType
+// std::ostream& operator<<(std::ostream& os, const BasicType& bt) {
+//     os << "BasicType { ";
+//     os << "type_name: \"" << bt.type_name << "\", ";
+//     os << "offset: " << bt.offset << ", ";
+//     os << "size: " << bt.size << ", ";
+//     os << "is_pointer: " << (bt.is_pointer ? "true" : "false");
+//     os << " }";
+//     return os;
+// }
+
+// // Print operator for StructType
+// std::ostream& operator<<(std::ostream& os, const StructType& st) {
+//     os << "StructType { type_name: \"" << st.type_name << "\"";
+    
+//     if (!st.members.empty()) {
+//         os << ", members: [\n";
+        
+//         for (size_t i = 0; i < st.members.size(); ++i) {
+//           os << st.members[i].first << << "[" << i "]: ";
+//             std::visit(VariantPrinter(os, 1), st.members[i].second);
+//             if (i < st.members.size() - 1) {
+//                 os << ",";
+//             }
+//             os << "\n";
+//         }
+        
+//         os << "  ]";
+//     } else {
+//         os << ", members: []";
+//     }
+    
+//     os << " }";
+//     return os;
+// }
+
+// // Print operator for ArrayType
+// std::ostream& operator<<(std::ostream& os, const ArrayType& at) {
+//     os << "ArrayType { ";
+//     os << "type_name: \"" << at.type_name << "\", ";
+//     os << "num_elements: " << at.num_elements;
+    
+//     os << ", element_type: ";
+//     std::visit(VariantPrinter(os, 0), at.element_type);
+    
+//     os << " }";
+//     return os;
+// }
+
+
+// void prettyPrintArgumentInfo(const ArgumentInformation& args) {
+//     if (args.members.empty()) {
+//         std::cout << "No arguments found." << std::endl;
+//         return;
+//     }
+    
+//     std::cout << "Arguments information:" << std::endl;
+//     std::cout << args << std::endl;
+// }
 
 
 int collect_so_file_elf_paths(struct dl_phdr_info *info, size_t size, void *data) {
@@ -955,13 +1110,6 @@ get_argument_information(CUfunction func) {
 }
 
 
-auto conversion_visitor = [](auto&& value) {
-  using T = std::decay_t<decltype(value)>;
-  return std::variant<BasicType, StructType, ArrayType>{
-    std::in_place_type<T>,
-    std::forward<decltype(value)>(value) };
- };
-      
 bool sizeof_type(const std::variant<BasicType, StructType, ArrayType>& type_info) {
   return std::visit([](auto&& arg) {
     using T = std::decay_t<decltype(arg)>;
@@ -982,49 +1130,134 @@ bool sizeof_type(const std::variant<BasicType, StructType, ArrayType>& type_info
   }, type_info);
 }
 
+struct A {
+  bool b;
+  struct B {
+    int c;
+    bool d;
+    double e;
+  };
+  struct C {
+    int f;
+    bool g;
+    double h;
+    struct D {
+      int i;
+    };
+  };
+};
+
 bool is_equal(char *arg1, char *arg2,
               const std::variant<BasicType, StructType, ArrayType>& type_info,
-              size_t array_index, size_t array_element_size, bool is_last_member_of_struct) {
-  return std::visit([arg1, arg2, &array_index, &array_element_size, &is_last_member_of_struct](auto&& arg) {
+              bool is_last_member_of_struct,
+              size_t global_offset_bytes, const std::string& name) {
+  return std::visit([arg1, arg2, &is_last_member_of_struct, &global_offset_bytes, &name](auto&& arg) -> bool {
     using T = std::decay_t<decltype(arg)>;
     if constexpr (std::is_same_v<T, BasicType>) {
-      if (is_last_member_of_struct && arg.is_pointer) {
-        // not always true, but works around a tricky situation with lambdas.
+      if (is_last_member_of_struct && arg.is_pointer && name == "Could not get member name") {
+        // not always true, but works around a tricky situation with
+        // host-device lambdas, which store a host pointer in the
+        // final field of the class called "data". We know that device
+        // code will never access this. For some reason, "data" is not
+        // being put into the dwarf debug info, though, which is
+        // strange... Maybe because it is never accessed by the cuda
+        // kernel?
         return true;
       } else {
-        // this strategy does not work if you have an array folloed by an array. Whoops...
-        return std::memcmp(arg1 + arg.offset + array_index * array_element_size,
-                           arg2 + arg.offset + array_index * array_element_size, arg.size) == 0;
-        
+        // Calculate the absolute offset including array offset if inside an array
+        size_t offset = global_offset_bytes + arg.offset;
+        return std::memcmp(arg1 + offset, arg2 + offset, arg.size) == 0;
       }
     } else if constexpr (std::is_same_v<T, StructType>) {
+      // For structs, we need to consider its base offset plus any array offset
+      size_t base_offset = global_offset_bytes + arg.offset;
+      
       for (size_t i = 0; i < arg.members.size(); ++i) {
-        if (!is_equal(arg1, arg2, arg.members[i].second, array_index, array_element_size,
-                      i == arg.members.size() - 1)) {
+        // Pass the adjusted pointers that already include the base_offset
+        bool equal = is_equal(arg1,
+                              arg2,
+                              arg.members[i].second,
+                              i == arg.members.size() - 1,
+                              base_offset,
+                              arg.members[i].first);
+
+        if (!equal) {
           return false;
+        } else {
+          // base_offset = next_offset;
         }
       }
       return true;
     } else if constexpr (std::is_same_v<T, ArrayType>) {
-      TORCH_INTERNAL_ASSERT(array_index == 0, "Don't support nested arrays at this time.");
-      for (std::size_t i = 0; i < arg.num_elements; ++i) {
+      // Calculate the base offset of the array
+      
+      // Calculate the size of each element in this array
+      size_t element_size = std::visit([](auto&& element) -> size_t {
+        using ElementT = std::decay_t<decltype(element)>;
+        if constexpr (std::is_same_v<ElementT, BasicType>) {
+          return element.size;
+        } else if constexpr (std::is_same_v<ElementT, StructType>) {
+          return element.size;
+        }
+        return 0; // Should not happen
+      }, arg.element_type);
+      
+      // Check each element of the array
+      for (size_t i = 0; i < arg.num_elements; ++i) {
         auto &&up_cast = std::visit(conversion_visitor, arg.element_type);
-        if (!is_equal(arg1, arg2, up_cast, i, sizeof_type(up_cast), false)) {
+        // Pass the base pointers and let the recursive call handle the element offset
+
+        bool equal = is_equal(arg1, arg2, up_cast, false, global_offset_bytes, std::string("array[") + std::to_string(i) + "]");
+
+        if (!equal) {
           return false;
+        } else {
+          global_offset_bytes += element_size;
         }
       }
+
       return true;
     }
+    return false;
   }, type_info);
 }
 
+// bool is_equal(char *arg1, char *arg2,
+//               const std::variant<BasicType, StructType, ArrayType>& type_info,
+//               size_t array_index, size_t array_element_size, bool is_last_member_of_struct) {
+//   return std::visit([arg1, arg2, &array_index, &array_element_size, &is_last_member_of_struct](auto&& arg) {
+//     using T = std::decay_t<decltype(arg)>;
+//     if constexpr (std::is_same_v<T, BasicType>) {
+//       if (is_last_member_of_struct && arg.is_pointer) {
+//         // not always true, but works around a tricky situation with lambdas.
+//         return true;
+//       } else {
+//         // this strategy does not work if you have an array folloed by an array. Whoops...
+//         return std::memcmp(arg1 + arg.offset + array_index * array_element_size,
+//                            arg2 + arg.offset + array_index * array_element_size, arg.size) == 0;
+        
+//       }
+//     } else if constexpr (std::is_same_v<T, StructType>) {
+//       for (size_t i = 0; i < arg.members.size(); ++i) {
+//         if (!is_equal(arg1, arg2, arg.members[i].second, array_index, array_element_size,
+//                       i == arg.members.size() - 1)) {
+//           return false;
+//         }
+//       }
+//       return true;
+//     } else if constexpr (std::is_same_v<T, ArrayType>) {
+//       TORCH_INTERNAL_ASSERT(array_index == 0, "Don't support nested arrays at this time.");
+//       for (std::size_t i = 0; i < arg.num_elements; ++i) {
+//         auto &&up_cast = std::visit(conversion_visitor, arg.element_type);
+//         if (!is_equal(arg1, arg2, up_cast, i, sizeof_type(up_cast), false)) {
+//           return false;
+//         }
+//       }
+//       return true;
+//     }
+//   }, type_info);
+// }
+
 bool is_equal(void *arg1, void *arg2, std::variant<BasicType, StructType, ArrayType> info) {
-  // const std::variant<BasicType, StructType, ArrayType> vinfo(std::move(info));
-  return is_equal((char *)arg1, (char *)arg2, info, 0, 0, false);
-  // for (size_t i = 0; i < info.members->size(); ++i) {
-  //   if (!is_equal((char *)arg1, (char *)arg2, info, 0, 0)) {
-  //     return false;
-  //   }
-  // }
-  // return true;
+  return is_equal((char *)arg1, (char *)arg2, info, false, 0, "Parameters");
 }

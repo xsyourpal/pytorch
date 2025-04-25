@@ -7,7 +7,7 @@
 // mistake on my part.
 struct BasicType {
   std::string type_name;
-  size_t offset;
+  size_t offset = 0;
   size_t size;
   bool is_pointer;
 };
@@ -19,6 +19,7 @@ struct StructType {
   std::string type_name;
   // std::unique_ptr<std::vector<std::variant<BasicType, StructType, ArrayType>>> members;
   std::vector<std::pair<std::string, std::variant<BasicType, StructType, ArrayType>>> members;
+  size_t offset = 0;
   // we need a size field because structs can have tail padding.
   size_t size;
 };
@@ -28,6 +29,7 @@ struct ArrayType {
   // dwarf debug information will never allow an array to be nested
   // within an array. Instead, you will just have multiple
   // "subranges".
+  size_t offset = 0;
   std::variant<BasicType, StructType> element_type;
   // std::unique_ptr<std::variant<BasicType, StructType, ArrayType>> element_type;
   size_t num_elements;
