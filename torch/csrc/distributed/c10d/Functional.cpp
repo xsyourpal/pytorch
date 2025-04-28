@@ -6,6 +6,7 @@
 #include <torch/csrc/distributed/c10d/Functional.hpp>
 #include <torch/csrc/distributed/c10d/GroupRegistry.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
+#include <torch/csrc/distributed/c10d/shm.hpp>
 #include <utility>
 
 namespace {
@@ -30,20 +31,59 @@ c10d::ReduceOp to_reduce_op(const std::string& reduce_op) {
   return it->second;
 }
 
+at::Tensor& shm_all_reduce_(
+    at::Tensor& input,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
+    std::string reduce_op,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
+    std::string group_name) {
+  auto op = to_reduce_op(reduce_op);
+
+  auto numel = input.numel();
+  int data_size = 0;
+
+  switch (input.scalar_type()) {
+    case c10::ScalarType::BFloat16:
+      data_size = numel * 2;
+      break;
+    case c10::ScalarType::Float:
+      data_size = numel * 4;
+      break;
+    default:
+      TORCH_CHECK(
+          false,
+          "Unsupported data type for shm_all_reduce: ",
+          c10::toString(input.scalar_type()));
+  }
+  c10d::all_reduce_outer_loop(input, numel, data_size);
+  return input;
+}
+
+at::Tensor shm_all_reduce(
+    const at::Tensor& input,
+    std::string reduce_op,
+    std::string group_name) {
+  auto output = input.clone(at::MemoryFormat::Contiguous);
+  return shm_all_reduce_(output, std::move(reduce_op), std::move(group_name));
+}
+
 at::Tensor& all_reduce_(
     at::Tensor& input,
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::string reduce_op,
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::string group_name) {
-  c10d::AllreduceOptions opts;
-  opts.reduceOp = to_reduce_op(reduce_op);
+  // replace with shm_all_reduce_
+  return shm_all_reduce_(input, std::move(reduce_op), std::move(group_name));
 
-  std::vector<at::Tensor> inputs{input};
-  auto group = c10d::resolve_process_group(group_name);
-  auto work = group->allreduce(inputs, opts);
-  c10d::register_work(input, work);
-  return input;
+  // c10d::AllreduceOptions opts;
+  // opts.reduceOp = to_reduce_op(reduce_op);
+
+  // std::vector<at::Tensor> inputs{input};
+  // auto group = c10d::resolve_process_group(group_name);
+  // auto work = group->allreduce(inputs, opts);
+  // c10d::register_work(input, work);
+  // return input;
 }
 
 at::Tensor all_reduce(
@@ -237,6 +277,18 @@ at::Tensor broadcast(
 } // namespace
 
 TORCH_LIBRARY(_c10d_functional, m) {
+  m.def(
+      "shm_all_reduce(Tensor input, str reduce_op, str group_name) -> Tensor",
+      torch::dispatch(
+          c10::DispatchKey::CompositeExplicitAutograd, ::shm_all_reduce),
+      {at::Tag::pt2_compliant_tag});
+
+  m.def(
+      "shm_all_reduce_(Tensor(a!) input, str reduce_op, str group_name) -> Tensor(a!)",
+      torch::dispatch(
+          c10::DispatchKey::CompositeExplicitAutograd, ::shm_all_reduce_),
+      {at::Tag::pt2_compliant_tag});
+
   m.def(
       "all_reduce(Tensor input, str reduce_op, str group_name) -> Tensor",
       torch::dispatch(
