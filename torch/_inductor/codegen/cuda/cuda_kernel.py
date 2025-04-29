@@ -1,4 +1,5 @@
 # mypy: allow-untyped-defs
+import functools
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional, TYPE_CHECKING, Union
