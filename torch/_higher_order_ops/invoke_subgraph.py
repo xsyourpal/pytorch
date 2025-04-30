@@ -383,7 +383,7 @@ class InvokeSubgraphAutogradOp(torch.autograd.Function):
         with torch._C._AutoDispatchBelowAutograd():
             out = invoke_subgraph(
                 subgraph,
-                f"___forward_{identifier}",
+                f"_forward_{identifier}",
                 operands,
             )
 
@@ -447,7 +447,7 @@ class InvokeSubgraphAutogradOp(torch.autograd.Function):
             invoke_subgraph_cache.add_lazy_bwd_entry(identifier, bw_graph)
 
         grads = invoke_subgraph(
-            bw_graph, f"___backward_{identifier}", primals_and_tangents
+            bw_graph, f"_backward_{identifier}", primals_and_tangents
         )[: -output_metadata.num_fw_outs]
         return None, None, None, *grads
 

@@ -537,15 +537,13 @@ def run_joint_graph_passes_on_hops(
             and node.target is invoke_subgraph
             and isinstance(node.args[1], str)
         ):
-            identifier = (
-                node.args[1].replace("___forward", "").replace("___backward", "")
-            )
+            identifier = node.args[1].replace("_forward", "").replace("_backward", "")
 
             # NB: This is done in a separate if else condition because we early
             # return if the partitioning_done is True.
-            if node.args[1].startswith("___forward"):
+            if node.args[1].startswith("_forward"):
                 fw_hop_nodes.append(node)
-            elif node.args[1].startswith("___backward"):
+            elif node.args[1].startswith("_backward"):
                 found_backward_node = True
                 bw_hop_nodes.append(node)
 
@@ -557,11 +555,11 @@ def run_joint_graph_passes_on_hops(
             hop_gm = getattr(joint_gm, node.args[0].target)
             assert isinstance(hop_gm, torch.fx.GraphModule)
 
-            if node.args[1].startswith("___forward"):
+            if node.args[1].startswith("_forward"):
                 # Collect some information from the forward hop graph
                 new_hop_graphs[identifier].old_num_fw_inputs = num_inputs(hop_gm)
                 new_hop_graphs[identifier].old_num_fw_outputs = num_outputs(hop_gm)
-            elif node.args[1].startswith("___backward"):
+            elif node.args[1].startswith("_backward"):
                 num_fw_inputs = new_hop_graphs[identifier].old_num_fw_inputs
                 assert num_fw_inputs is not None
                 num_fw_outputs = new_hop_graphs[identifier].old_num_fw_outputs
@@ -678,9 +676,7 @@ def run_joint_graph_passes_on_hops(
         # add a call_function fw_node. Additionally, also use getitem
         # call_functions to collect the saved_tensor nodes
 
-        identifier = (
-            fw_node.args[1].replace("___forward", "").replace("___backward", "")
-        )
+        identifier = fw_node.args[1].replace("_forward", "").replace("_backward", "")
         new_fw_hop_gm = new_hop_graphs[identifier].new_fw_hop_gm
         assert new_fw_hop_gm is not None
 
@@ -733,9 +729,7 @@ def run_joint_graph_passes_on_hops(
     for bw_node in bw_hop_nodes:
         # Get the saved_tensors from the forward graph and find the new
         # tangents, and replace the old bw hop with the new bw hop.
-        identifier = (
-            bw_node.args[1].replace("___forward", "").replace("___backward", "")
-        )
+        identifier = bw_node.args[1].replace("_forward", "").replace("_backward", "")
         new_bw_hop_gm = new_hop_graphs[identifier].new_bw_hop_gm
         assert new_bw_hop_gm is not None
 
