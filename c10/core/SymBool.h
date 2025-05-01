@@ -91,7 +91,7 @@ class C10_API SymBool {
 };
 
 C10_API std::ostream& operator<<(std::ostream& os, const SymBool& s);
-
+// TODO pass error message to expect_true when possible.
 #define TORCH_SYM_CHECK(cond, ...) \
   TORCH_CHECK((cond).expect_true(__FILE__, __LINE__), __VA_ARGS__)
 #define TORCH_SYM_INTERNAL_ASSERT(cond, ...) \
