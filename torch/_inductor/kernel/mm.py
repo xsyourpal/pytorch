@@ -867,7 +867,10 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
                     epilogue_fn=addmm_epilogue(layout.dtype, alpha, beta),
                 )
 
-    if is_nonzero and use_cutlass_template(layout, m, n, k):
+    if static_shape and is_nonzero and use_cutlass_template(layout, m, n, k):
+        # Filter out a known cause of CUDA illegal memory access errors
+        # broadcasting on the last dim of the bias term seems not to be working
+        # in the linear GEMM epilogue used by addmm.
         CUTLASS3xGemmTemplate.add_cutlass_gemm_choices(
             choices,
             layout,
