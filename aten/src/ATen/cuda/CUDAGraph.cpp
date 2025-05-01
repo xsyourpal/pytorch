@@ -23,6 +23,79 @@ namespace at::cuda {
 static bool _cuda_graphs_debug = false;
 constexpr int kSynchronizeBusyWaitMillis = 10;
 
+std::optional<std::tuple<size_t, size_t>>
+checkAllocationWithinGraph(void* ptr, const std::vector<DynamicGraphAllocation>& sorted_allocations) {
+  // since allocations is sorted in ptr order, we can search it in log time
+
+  // finds first allocation base address is greater than ptr. That seems pretty wrong to me...
+  auto it = std::upper_bound(sorted_allocations.begin(), sorted_allocations.end(), ptr, [](const void* p, const DynamicGraphAllocation& alloc) {
+    return p < alloc.ptr;
+  });
+  // upper_bound finds the first allocation whose ptr is strictly greater than our search
+  if (it == sorted_allocations.begin()) {
+    return std::nullopt; // the ptr is before our first allocation
+  }
+  // so we must decrement to get to the one we actually want
+  // okay, that works. Or does it? What if my allocation is not within one of my alloations?
+  --it;
+  // something seems wrong here...
+  void* begin = it->ptr;
+  void* end = (char*) begin + it->size;
+  if (ptr >= begin && ptr < end) {
+    size_t offset = (char*) ptr - (char*) begin;
+    return std::make_tuple(it->alloc_idx, offset);
+  }
+  return std::nullopt;
+}
+
+  std::vector<std::tuple<size_t, size_t, size_t>> gather_pointers_in_node(
+    const std::variant<BasicType, StructType, ArrayType>& type_info,
+    char *arg_buffer,
+    const std::vector<DynamicGraphAllocation>& sorted_allocations,
+    size_t global_offset_bytes) {
+  std::vector<std::tuple<size_t, size_t, size_t>> results;
+  std::visit([&results, global_offset_bytes, &sorted_allocations, &arg_buffer](auto&& arg) {
+    using T = std::decay_t<decltype(arg)>;
+    if constexpr (std::is_same_v<T, BasicType>) {
+      size_t offset = global_offset_bytes + arg.offset;
+      if (arg.is_pointer) {
+        TORCH_INTERNAL_ASSERT(offset % 8 == 0, "All pointers should be 8 byte aligned.");
+        if (auto result = checkAllocationWithinGraph(*((void**)(arg_buffer + offset)), sorted_allocations)) {
+          results.push_back({std::get<0>(*result), std::get<1>(*result), offset});
+        }
+      }
+    } else if constexpr (std::is_same_v<T, StructType>) {
+      size_t base_offset = global_offset_bytes + arg.offset;
+      for (auto&& [_, member]: arg.members) {
+        auto &&recursive_results = gather_pointers_in_node(member, arg_buffer, sorted_allocations, base_offset);
+        results.insert(results.end(), recursive_results.begin(), recursive_results.end());
+      }
+    } else if constexpr (std::is_same_v<T, ArrayType>) {
+      size_t element_size = std::visit([](auto&& element) -> size_t {
+        using ElementT = std::decay_t<decltype(element)>;
+        if constexpr (std::is_same_v<ElementT, BasicType>) {
+          return element.size;
+        } else if constexpr (std::is_same_v<ElementT, StructType>) {
+          return element.size;
+        }
+        return 0; // Should not happen
+      }, arg.element_type);
+
+      size_t base_offset = global_offset_bytes;
+
+      for (size_t i = 0; i < arg.num_elements; ++i) {
+        auto &&up_cast = std::visit(conversion_visitor, arg.element_type);
+        auto &&recursive_results = gather_pointers_in_node(up_cast, arg_buffer, sorted_allocations, base_offset);
+        results.insert(results.end(), recursive_results.begin(), recursive_results.end());
+        base_offset += element_size;
+      }
+    }
+  }, type_info);
+  return results;
+}
+
+
+
 std::string demangle(const std::string &mangled) {
     size_t length = 0;
     int status = 0;
@@ -372,29 +445,32 @@ CUDAGraph::~CUDAGraph() {
 #endif
 }
 
-std::optional<std::tuple<size_t, size_t>> checkAllocationWithinGraph(void* ptr, const std::vector<DynamicGraphAllocation>& sorted_allocations) {
-  // since allocations is sorted in ptr order, we can search it in log time
-  auto it = std::upper_bound(sorted_allocations.begin(), sorted_allocations.end(), ptr, [](const void* p, const DynamicGraphAllocation& alloc) {
-    return p < alloc.ptr;
-  });
-  // upper_bound finds the first allocation whose ptr is strictly greater than our search
-  if (it == sorted_allocations.begin()) {
-    return std::nullopt; // the ptr is before our first allocation
-  }
-  // so we must decrement to get to the one we actually want
-  --it;
-  void* begin = it->ptr;
-  void* end = (char*) begin + it->size;
-  if (ptr >= begin && ptr < end) {
-    size_t offset = (char*) ptr - (char*) begin;
-    return std::make_tuple(it->alloc_idx, offset);
-  }
-  return std::nullopt;
+void CUDAGraph::add_dynamic_update(const std::tuple<size_t, size_t, size_t>& result,
+                                   cudaGraphNode_t node,
+                                   size_t param_offset) {
+  auto [alloc_idx, offset, address_start] = result;
+  cudaKernelNodeAttrValue attr_value = {
+    .deviceUpdatableKernelNode = {
+      .deviceUpdatable = 1,
+      .devNode = nullptr,
+    }
+  };
+  AT_CUDA_CHECK(cudaGraphKernelNodeSetAttribute(
+      node,
+      cudaLaunchAttributeDeviceUpdatableKernelNode,
+      &attr_value));
+  TORCH_CHECK(attr_value.deviceUpdatableKernelNode.devNode != nullptr);
+
+  kernel_param_updates_.push_back({
+      .dev_node = attr_value.deviceUpdatableKernelNode.devNode,
+      .param_offset = param_offset + address_start,
+      .alloc_idx = alloc_idx,
+      .offset = offset,
+    });
 }
 
 // this does not use the pointer diffing approach. Not a big fan of that...
-void CUDAGraph::become_dynamic(const std::vector<at::Tensor>& dynamic_tensors,
-                               const CUDAGraph& graph2) {
+void CUDAGraph::become_dynamic(const std::vector<at::Tensor>& dynamic_tensors) {
   TORCH_CHECK(dynamic_graph_, "Graph must have been captured with dynamic_graph=True");
   TORCH_CHECK(allocations_.empty(), "Must not have already called become_dynamic");
   TORCH_CHECK(!dynamic_tensors.empty(), "Must have at least one dynamic tensor");
@@ -427,22 +503,12 @@ void CUDAGraph::become_dynamic(const std::vector<at::Tensor>& dynamic_tensors,
 
   size_t num_nodes;
   AT_CUDA_CHECK(cudaGraphGetNodes(graph_, nullptr, &num_nodes));
-  std::cout << "number of nodes captured " << num_nodes << std::endl;
   std::vector<cudaGraphNode_t> nodes(num_nodes);
   if (num_nodes != 0) {
     // return cudaErrorInvalidValue if num_nodes is 0
     AT_CUDA_CHECK(cudaGraphGetNodes(graph_, nodes.data(), &num_nodes));
   }
 
-  size_t num_nodes2;
-  AT_CUDA_CHECK(cudaGraphGetNodes(graph2.graph_, nullptr, &num_nodes2));
-  TORCH_CHECK(num_nodes == num_nodes2);
-  std::vector<cudaGraphNode_t> nodes2(num_nodes2);
-  if (num_nodes2 != 0) {
-    // return cudaErrorInvalidValue if num_nodes is 0
-    AT_CUDA_CHECK(cudaGraphGetNodes(graph2.graph_, nodes2.data(), &num_nodes2));
-  }
-  
   for (size_t i = 0; i < num_nodes; ++i) {
     cudaGraphNode_t node = nodes[i];
 
@@ -478,52 +544,43 @@ void CUDAGraph::become_dynamic(const std::vector<at::Tensor>& dynamic_tensors,
 
       size_t param_offset;
       size_t param_size;
+
+      ArgumentInformation type_info = get_argument_information(func);
       for (size_t param_index = 0;
            globalContext().getNVRTC().cuFuncGetParamInfo(func, param_index, &param_offset, &param_size) != CUDA_ERROR_INVALID_VALUE; param_index++) {
-        char** arg1_speculative_pointer =
+        if (type_info.members.empty()) {
+          if (param_index == 0) {
+            TORCH_WARN("No type information for", func_name);
+          }
+          char** arg1_speculative_pointer =
             (char**)driver_node_params.kernelParams[param_index];
 
-        // ABI guarantees that pointers have 8-byte alignment
-        for (size_t address_start = 0; param_size - address_start >= 8;
-             address_start += 8) {
-          char* arg1_value = arg1_speculative_pointer[address_start / 8];
-          if (auto result = checkAllocationWithinGraph(arg1_value, sorted_allocations)) {
-            auto [alloc_idx, offset] = *result;
-            std::cout << "LEIJURV: I have decided that " << address_start << " bytes into argument #" << param_index << " of kernel " << func_name << " is actually allocation " << alloc_idx << " indexed to offset " << offset << std::endl;
-            cudaKernelNodeAttrValue attr_value = {
-                .deviceUpdatableKernelNode = {
-                    .deviceUpdatable = 1,
-                    .devNode = nullptr,
-                }
-            };
-            AT_CUDA_CHECK(cudaGraphKernelNodeSetAttribute(
-                node,
-                cudaLaunchAttributeDeviceUpdatableKernelNode,
-                &attr_value));
-            TORCH_CHECK(
-                attr_value.deviceUpdatableKernelNode.devNode != nullptr);
+          // ABI guarantees that pointers have 8-byte alignment
+          for (size_t address_start = 0; param_size - address_start >= 8;
+               address_start += 8) {
+            char* arg1_value = arg1_speculative_pointer[address_start / 8];
+            if (auto result = checkAllocationWithinGraph(arg1_value, sorted_allocations)) {
+              auto [alloc_idx, offset] = *result;
+              std::cout << "LEIJURV: I have decided that " << address_start << " bytes into argument #" << param_index << " of kernel " <<
+                func_name << " is actually allocation " << alloc_idx <<
+                " with base address " << (void*) allocations_[alloc_idx].ptr << " and size " << allocations_[alloc_idx].size  <<
+                " indexed to offset " << offset << std::endl;
 
-            kernel_param_updates_.push_back({
-              .dev_node = attr_value.deviceUpdatableKernelNode.devNode,
-              .param_offset = param_offset + address_start,
-              .alloc_idx = alloc_idx,
-              .offset = offset,
-            });
-          } else {
-            cudaGraphNode_t node2 = nodes2[i];
-            
-            CUDA_KERNEL_NODE_PARAMS driver_node_params2;
-            AT_CUDA_DRIVER_CHECK(
-                                 globalContext().getNVRTC().cuGraphKernelNodeGetParams(
-                                                                                       node2, &driver_node_params2));
-            // TODO: Contemplate how this might work in the presence
-            // of padding fields in structs, which I suppose are not
-            // guaranteed to be the same across calls...
-            if (std::memcmp(driver_node_params.kernelParams[param_index],
-                            driver_node_params2.kernelParams[param_index],
-                            param_size) != 0) {
-              TORCH_WARN("For node ", i, " there was a different value between graph1 and graph2, but this different value was not a tensor we intended to change");
+              add_dynamic_update({std::get<0>(*result), std::get<1>(*result), address_start},
+                                 node, param_offset);
             }
+          }
+        } else {
+          // check using type information
+          char* arg =
+            (char*)driver_node_params.kernelParams[param_index];
+
+          // is this empty for some reason?
+          std::vector<std::tuple<size_t, size_t, size_t>> results =
+            gather_pointers_in_node(type_info.members[param_index].second, arg, sorted_allocations, 0);
+
+          for (auto&& result: results) {
+            add_dynamic_update(result, node, param_offset);
           }
         }
       }
@@ -878,28 +935,9 @@ bool graphs_equal(cudaGraph_t graph1, cudaGraph_t graph2) {
       size_t param_offset;
       size_t param_size;
 
-      size_t q = 0;
-      
-      for (; globalContext().getNVRTC().cuFuncGetParamInfo(func1, q, &param_offset, &param_size) != CUDA_ERROR_INVALID_VALUE; q++) {
-        // std::cout << "GALVEZ: " << q << " " << param_offset << " " << param_size << std::endl;
-      }
-
-      // void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, 8, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(
-      // int,
-      // at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1},
-      // std::array<char*, 2ul>,
-      // TrivialOffsetCalculator<1, unsigned int>,
-      // TrivialOffsetCalculator<1, unsigned int>,
-      // at::native::memory::LoadWithCast<1>,
-      // at::native::memory::StoreWithCast<1>)
-
-      // std::cout << "GALVEZ: number of parmeters " << q << std::endl;
-
-      // std::unordered_map<std::string, std::vector<ArgumentInformation>> type_info = get_argument_information({func_name});
       ArgumentInformation type_info = get_argument_information(func1);
       for (size_t param_index = 0;
            globalContext().getNVRTC().cuFuncGetParamInfo(func1, param_index, &param_offset, &param_size) != CUDA_ERROR_INVALID_VALUE; param_index++) {
-        // std::cout << "GALVEZ: " << param_index << " " << param_offset << " " << param_size << std::endl;
 
         if (type_info.members.empty()) {
           if (param_index == 0) {

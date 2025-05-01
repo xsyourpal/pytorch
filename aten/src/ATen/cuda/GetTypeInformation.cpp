@@ -51,13 +51,6 @@ int memfd_create(const char *name, unsigned int flags) {
     return syscall(SYS_memfd_create, name, flags);
 }
 
-auto conversion_visitor = [](auto&& value) {
-  using T = std::decay_t<decltype(value)>;
-  return std::variant<BasicType, StructType, ArrayType>{
-    std::in_place_type<T>,
-    std::forward<decltype(value)>(value) };
- };
-      
 Dwarf_Die get_type_follow_typedefs(Dwarf_Debug dbg, Dwarf_Die typeDie) {
   Dwarf_Half typeTag;
   Dwarf_Error error;
@@ -968,92 +961,6 @@ void prettyPrintArgumentInfo(const ArgumentInformation& args) {
 }
 
 
-// // Forward declarations for the print operators
-// std::ostream& operator<<(std::ostream& os, const BasicType& bt);
-// std::ostream& operator<<(std::ostream& os, const StructType& st);
-// std::ostream& operator<<(std::ostream& os, const ArrayType& at);
-
-// // Generic visitor for std::variant printing
-// struct VariantPrinter {
-//     std::ostream& os;
-//     int indent_level;
-    
-//     VariantPrinter(std::ostream& os, int indent_level) : os(os), indent_level(indent_level) {}
-    
-//     void operator()(const BasicType& bt) const {
-//         os << std::string(indent_level * 2, ' ') << bt;
-//     }
-    
-//     void operator()(const StructType& st) const {
-//         os << std::string(indent_level * 2, ' ') << st;
-//     }
-    
-//     void operator()(const ArrayType& at) const {
-//         os << std::string(indent_level * 2, ' ') << at;
-//     }
-// };
-
-// // Print operator for BasicType
-// std::ostream& operator<<(std::ostream& os, const BasicType& bt) {
-//     os << "BasicType { ";
-//     os << "type_name: \"" << bt.type_name << "\", ";
-//     os << "offset: " << bt.offset << ", ";
-//     os << "size: " << bt.size << ", ";
-//     os << "is_pointer: " << (bt.is_pointer ? "true" : "false");
-//     os << " }";
-//     return os;
-// }
-
-// // Print operator for StructType
-// std::ostream& operator<<(std::ostream& os, const StructType& st) {
-//     os << "StructType { type_name: \"" << st.type_name << "\"";
-    
-//     if (!st.members.empty()) {
-//         os << ", members: [\n";
-        
-//         for (size_t i = 0; i < st.members.size(); ++i) {
-//           os << st.members[i].first << << "[" << i "]: ";
-//             std::visit(VariantPrinter(os, 1), st.members[i].second);
-//             if (i < st.members.size() - 1) {
-//                 os << ",";
-//             }
-//             os << "\n";
-//         }
-        
-//         os << "  ]";
-//     } else {
-//         os << ", members: []";
-//     }
-    
-//     os << " }";
-//     return os;
-// }
-
-// // Print operator for ArrayType
-// std::ostream& operator<<(std::ostream& os, const ArrayType& at) {
-//     os << "ArrayType { ";
-//     os << "type_name: \"" << at.type_name << "\", ";
-//     os << "num_elements: " << at.num_elements;
-    
-//     os << ", element_type: ";
-//     std::visit(VariantPrinter(os, 0), at.element_type);
-    
-//     os << " }";
-//     return os;
-// }
-
-
-// void prettyPrintArgumentInfo(const ArgumentInformation& args) {
-//     if (args.members.empty()) {
-//         std::cout << "No arguments found." << std::endl;
-//         return;
-//     }
-    
-//     std::cout << "Arguments information:" << std::endl;
-//     std::cout << args << std::endl;
-// }
-
-
 int collect_so_file_elf_paths(struct dl_phdr_info *info, size_t size, void *data) {
   auto paths = (std::vector<const char*>*) data;
   std::string_view view(info->dlpi_name);
@@ -1154,6 +1061,8 @@ bool is_equal(char *arg1, char *arg2,
   return std::visit([arg1, arg2, &is_last_member_of_struct, &global_offset_bytes, &name](auto&& arg) -> bool {
     using T = std::decay_t<decltype(arg)>;
     if constexpr (std::is_same_v<T, BasicType>) {
+      // TODO: Check if this is a void pointer to be extract precise.
+      // also check name of struct? Don't know if we can verify that a struct is a lambda though.
       if (is_last_member_of_struct && arg.is_pointer && name == "Could not get member name") {
         // not always true, but works around a tricky situation with
         // host-device lambdas, which store a host pointer in the
@@ -1221,42 +1130,6 @@ bool is_equal(char *arg1, char *arg2,
     return false;
   }, type_info);
 }
-
-// bool is_equal(char *arg1, char *arg2,
-//               const std::variant<BasicType, StructType, ArrayType>& type_info,
-//               size_t array_index, size_t array_element_size, bool is_last_member_of_struct) {
-//   return std::visit([arg1, arg2, &array_index, &array_element_size, &is_last_member_of_struct](auto&& arg) {
-//     using T = std::decay_t<decltype(arg)>;
-//     if constexpr (std::is_same_v<T, BasicType>) {
-//       if (is_last_member_of_struct && arg.is_pointer) {
-//         // not always true, but works around a tricky situation with lambdas.
-//         return true;
-//       } else {
-//         // this strategy does not work if you have an array folloed by an array. Whoops...
-//         return std::memcmp(arg1 + arg.offset + array_index * array_element_size,
-//                            arg2 + arg.offset + array_index * array_element_size, arg.size) == 0;
-        
-//       }
-//     } else if constexpr (std::is_same_v<T, StructType>) {
-//       for (size_t i = 0; i < arg.members.size(); ++i) {
-//         if (!is_equal(arg1, arg2, arg.members[i].second, array_index, array_element_size,
-//                       i == arg.members.size() - 1)) {
-//           return false;
-//         }
-//       }
-//       return true;
-//     } else if constexpr (std::is_same_v<T, ArrayType>) {
-//       TORCH_INTERNAL_ASSERT(array_index == 0, "Don't support nested arrays at this time.");
-//       for (std::size_t i = 0; i < arg.num_elements; ++i) {
-//         auto &&up_cast = std::visit(conversion_visitor, arg.element_type);
-//         if (!is_equal(arg1, arg2, up_cast, i, sizeof_type(up_cast), false)) {
-//           return false;
-//         }
-//       }
-//       return true;
-//     }
-//   }, type_info);
-// }
 
 bool is_equal(void *arg1, void *arg2, std::variant<BasicType, StructType, ArrayType> info) {
   return is_equal((char *)arg1, (char *)arg2, info, false, 0, "Parameters");

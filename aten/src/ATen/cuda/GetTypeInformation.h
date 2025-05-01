@@ -40,6 +40,13 @@ struct ArrayType {
 // has no meaning.
 using ArgumentInformation = StructType;
 
+inline auto conversion_visitor = [](auto&& value) {
+  using T = std::decay_t<decltype(value)>;
+  return std::variant<BasicType, StructType, ArrayType>{
+    std::in_place_type<T>,
+    std::forward<decltype(value)>(value) };
+};
+
 ArgumentInformation
 getArgumentInformation(const char* linkageName, const std::string& elfPath);
 

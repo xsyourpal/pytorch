@@ -81,13 +81,14 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
   MempoolId_t pool();
   void enable_debug_mode();
   void debug_dump(const std::string& debug_path);
-  void become_dynamic(const std::vector<at::Tensor>& dynamic_tensors, const CUDAGraph& graph2);
+  void become_dynamic(const std::vector<at::Tensor>& dynamic_tensors);
   void replay_dynamic(const std::vector<at::Tensor>& dynamic_tensors);
 
   TORCH_CUDA_CPP_API friend bool operator==(const CUDAGraph& left, const CUDAGraph& right);
   TORCH_CUDA_CPP_API friend bool operator!=(const CUDAGraph& left, const CUDAGraph& right);
 
  protected:
+ void add_dynamic_update(const std::tuple<size_t, size_t, size_t>& result, cudaGraphNode_t node, size_t param_offset);
   template<bool VOLTA_OR_LATER>
   void launch_dynamic_updaters(const std::vector<void*>& actualDataPtrs);
   cudaGraph_t graph_ = nullptr;

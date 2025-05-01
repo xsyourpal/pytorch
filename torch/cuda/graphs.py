@@ -87,9 +87,9 @@ class CUDAGraph(torch._C._CUDAGraph):
         r"""Replay the CUDA work captured by this graph."""
         super().replay()
 
-    def become_dynamic(self, dynamic_tensors, graph2):
+    def become_dynamic(self, dynamic_tensors):
         r"""Become a dynamic graph, where the dynamic_tensors can vary in future replays."""
-        super().become_dynamic(dynamic_tensors, graph2)
+        super().become_dynamic(dynamic_tensors)
 
     def replay_dynamic(self, dynamic_tensors):
         r"""Replay the CUDA work captured by this graph, upon new data."""
