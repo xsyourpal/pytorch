@@ -931,6 +931,12 @@ def find_symbol_binding_fx_nodes(
     return r
 
 
+@dataclass
+class BackendSpecialization:
+    symbol: sympy.Symbol
+    hint: int
+    specialization: Callable
+
 # Analogous to ConvertIntSource
 @dataclass(frozen=True)
 class ConvertIntKey:
@@ -3561,6 +3567,8 @@ class ShapeEnv:
 
         self.trace_asserts = trace_asserts
 
+        self.backend_specializations = []
+
         from torch.fx.experimental.validator import translation_validation_enabled
 
         self._translation_validation_enabled = translation_validation_enabled()
@@ -4044,6 +4052,11 @@ class ShapeEnv:
                 do_not_specialize_zero_one=config.backed_size_oblivious,
                 symbolic_context=symbolic_context,
             )
+            for specialization in symbolic_context.backend_specializations:
+                self.backend_specializations.append(BackendSpecialization(
+                    sym,
+                    *specialization,
+                ))
             if (
                 config.backed_size_oblivious
                 and isinstance(sym, sympy.Symbol)  # could be static
@@ -4142,6 +4155,7 @@ class ShapeEnv:
         source: Source,
         *,
         symbolic_context: Optional[SymbolicContext] = None,
+        specialization = None,
     ) -> tuple[tuple[IntLikeType, ...], tuple[IntLikeType, ...], IntLikeType,]:
         dim = len(ex_size)
 
@@ -4220,6 +4234,11 @@ class ShapeEnv:
             )
             for i, (sym, hint) in enumerate(zip(size, ex_size))
         ]
+
+        for i, size in enumerate(sym_sizes):
+            if i in specialization.idxs:
+                expect_true(specialization.lambdas[i](size))
+
         sym_stride = []
         for i, stride_expr in enumerate(stride):
             # NB: Don't duck size the stride; instead use the expression
