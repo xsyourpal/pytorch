@@ -96,6 +96,12 @@ from torch.utils._sympy.value_ranges import (
     ValueRanges,
 )
 from torch.utils._traceback import CapturedTraceback, format_frame
+from typing import List, Tuple
+from typing_extensions import ParamSpec, TypeVar
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
 
 
 if TYPE_CHECKING:
@@ -931,6 +937,12 @@ def find_symbol_binding_fx_nodes(
     return r
 
 
+@dataclass(frozen=True)
+class BackendSpecialization:
+    source: TensorPropertySource
+    hint: int
+    check_fn: Callable
+
 # Analogous to ConvertIntSource
 @dataclass(frozen=True)
 class ConvertIntKey:
@@ -1570,7 +1582,7 @@ def constrain_unify(a: torch.SymInt, b: torch.SymInt) -> None:
 # in the unlikely branch.)  (I think expect is a good name; in recent
 # versions of C++, this is replaced with [[likely]], which is weaker
 # and not accurate for this function!)
-def expect_true(a: BoolLikeType, skip: int = 0) -> bool:
+def expect_true(a: BoolLikeType, skip: int = 0, guard: bool = True) -> bool:
     if isinstance(a, SymBool):
         # TODO: check perf implications of this
         frame = inspect.currentframe()
@@ -1579,7 +1591,7 @@ def expect_true(a: BoolLikeType, skip: int = 0) -> bool:
                 break
             frame = frame.f_back
         return a.node.expect_true(
-            frame.f_code.co_filename if frame else "", frame.f_lineno if frame else 0
+            frame.f_code.co_filename if frame else "", frame.f_lineno if frame else 0, guard=guard
         )
     assert type(a) is bool, a
     return a
@@ -1924,6 +1936,7 @@ class StatelessSymbolicContext(SymbolicContext):
     dynamic_strides: DimList[DimDynamic] = None  # type: ignore[assignment]
     constraint_sizes: DimList[DimConstraint] = None  # type: ignore[assignment]
     constraint_strides: DimList[DimConstraint] = None  # type: ignore[assignment]
+    backend_specializations: Optional[list[list[tuple[int, Callable[_P, _T]]]]] = None
     # If the tensor is a view, this should be populated for the base. It contains
     # information on how to allocate symbols when recursively fakeifying the base
     # during view fake-ification.
@@ -1931,6 +1944,12 @@ class StatelessSymbolicContext(SymbolicContext):
     # TODO: add storage offset and stride symbolic_context
 
     def __post_init__(self) -> None:
+        if self.backend_specializations is None:
+            object.__setattr__(
+                self,
+                "backend_specializations",
+                [[]] * len(self.dynamic_sizes),
+            )
         if self.dynamic_strides is None:
             object.__setattr__(
                 self,
@@ -3560,6 +3579,8 @@ class ShapeEnv:
 
         self.trace_asserts = trace_asserts
 
+        self.backend_specializations = set()
+
         from torch.fx.experimental.validator import translation_validation_enabled
 
         self._translation_validation_enabled = translation_validation_enabled()
@@ -4043,6 +4064,11 @@ class ShapeEnv:
                 do_not_specialize_zero_one=config.backed_size_oblivious,
                 symbolic_context=symbolic_context,
             )
+            for specialization in symbolic_context.backend_specializations[i]:
+                self.backend_specializations.add(BackendSpecialization(
+                    TensorPropertySource(source, TensorProperty.SIZE, i),
+                    *specialization,
+                ))
             if (
                 config.backed_size_oblivious
                 and isinstance(sym, sympy.Symbol)  # could be static
@@ -4141,6 +4167,7 @@ class ShapeEnv:
         source: Source,
         *,
         symbolic_context: Optional[SymbolicContext] = None,
+        specialization = None,
     ) -> tuple[tuple[IntLikeType, ...], tuple[IntLikeType, ...], IntLikeType,]:
         dim = len(ex_size)
 
@@ -4211,14 +4238,20 @@ class ShapeEnv:
             symbolic_context,
         )
 
-        sym_sizes = [
-            self.create_symintnode(
+        sym_sizes = []
+        for i, (sym, hint) in enumerate(zip(size, ex_size)):
+            source = TensorPropertySource(source, TensorProperty.SIZE, i)
+            if specialization and specialization.source == source:
+                hint = specialization.hint
+            node = (self.create_symintnode(
                 sym,
                 hint=hint,
-                source=TensorPropertySource(source, TensorProperty.SIZE, i),
-            )
-            for i, (sym, hint) in enumerate(zip(size, ex_size))
-        ]
+                source=source
+            ))
+            sym_sizes.append(node)
+            if specialization:
+                expect_true(specialization.check_fn(node), guard=False)
+
         sym_stride = []
         for i, stride_expr in enumerate(stride):
             # NB: Don't duck size the stride; instead use the expression
