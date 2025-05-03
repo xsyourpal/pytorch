@@ -1496,7 +1496,7 @@ class OutputGraph(OutputGraphGuardsState):
                 # a lot of fake_tensor ownership assumptions and runs afoul of detect_fake_mode
                 self.tracing_context.fake_mode = backend_fake_mode
 
-            compiled_fns = []
+            specialized_compiled_fns = []
             with self.restore_global_state():
                 compiled_fn = self.call_user_compiler(gm)
                 for specialization in old_fake_mode.shape_env.backend_specializations:
@@ -1538,7 +1538,13 @@ class OutputGraph(OutputGraphGuardsState):
             self.install_global_unsafe(name, compiled_fn)
 
             cg = PyCodegen(tx)
-            cg.make_call_generated_code(name)
+
+            if specialized_compiled_fns:
+                for name, specialized_compiled_fn in specialized_compiled_fns:
+                    self.install_global_unsafe(name, specialized_compiled_fn)
+                cg.make_call_specialized_code(name, specialized_compiled_fns)
+            else:
+                cg.make_call_generated_code(name)
             return cg.get_instructions()
 
     @property
