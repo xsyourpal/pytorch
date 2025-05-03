@@ -1496,8 +1496,15 @@ class OutputGraph(OutputGraphGuardsState):
                 # a lot of fake_tensor ownership assumptions and runs afoul of detect_fake_mode
                 self.tracing_context.fake_mode = backend_fake_mode
 
+            compiled_fns = []
             with self.restore_global_state():
                 compiled_fn = self.call_user_compiler(gm)
+                for specialization in old_fake_mode.shape_env.backend_specializations:
+                    specialized_compiled_fns.append((
+                        unique_id("__specialized_compiled_fn"),
+                        specialization,
+                        self.call_user_compiler(gm, specialization=specialization)
+                    ))
 
             from torch.fx._lazy_graph_module import _LazyGraphModule
 
@@ -1542,16 +1549,16 @@ class OutputGraph(OutputGraphGuardsState):
     def graphargs(self) -> list[GraphArg]:
         return [node.meta["grapharg"] for node in self.placeholders]
 
-    def call_user_compiler(self, gm: fx.GraphModule) -> CompiledFn:
+    def call_user_compiler(self, gm: fx.GraphModule, **kwargs) -> CompiledFn:
         with dynamo_timed(
             "OutputGraph.call_user_compiler",
             phase_name="backend_compile",
             log_pt2_compile_event=True,
             dynamo_compile_column_us="aot_autograd_cumulative_compile_time_us",
         ):
-            return self._call_user_compiler(gm)
+            return self._call_user_compiler(gm, **kwargs)
 
-    def _call_user_compiler(self, gm: fx.GraphModule) -> CompiledFn:
+    def _call_user_compiler(self, gm: fx.GraphModule, **kwargs) -> CompiledFn:
         assert self.compiler_fn is not None
         tot = 0
         placeholders = []
@@ -1581,7 +1588,7 @@ class OutputGraph(OutputGraphGuardsState):
             compiler_fn = self.compiler_fn
             if config.verify_correctness:
                 compiler_fn = WrapperBackend(compiler_fn)
-            compiled_fn = compiler_fn(gm, self.example_inputs())
+            compiled_fn = compiler_fn(gm, self.example_inputs(), **kwargs)
             _step_logger()(logging.INFO, f"done compiler function {name}")
             assert callable(compiled_fn), "compiler_fn did not return callable"
         except (TensorifyScalarRestartAnalysis, ShortenTraceback):
