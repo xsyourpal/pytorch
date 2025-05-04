@@ -1876,6 +1876,7 @@ def compile_fx(
     config_patches: Optional[dict[str, Any]] = None,
     decompositions: Optional[dict[OpOverload, Callable[..., Any]]] = None,
     ignore_shape_env: bool = False,
+    specialization: Optional[BackendSpecialization] = None,
 ) -> Union[Callable[[list[object]], Sequence[torch.Tensor]], str, list[str]]:
     """
     Main entry point for compiling given FX graph.  Despite the fact that this
@@ -1900,6 +1901,7 @@ def compile_fx(
                 # need extra layer of patching as backwards is compiled out of scope
                 inner_compile=config.patch(config_patches)(inner_compile),
                 decompositions=decompositions,
+                specialization=specialization,
             )
 
     # TODO: This probably shouldn't be a recursive call
@@ -1955,12 +1957,14 @@ def compile_fx(
                     fake_args,
                     inner_compile=functools.partial(inner_compile, cpp_wrapper=True),
                     decompositions=decompositions,
+                    specialization=specialization,
                 )
 
     recursive_compile_fx = functools.partial(
         compile_fx,
         inner_compile=inner_compile,
         decompositions=decompositions,
+        specialization=specialization,
     )
 
     if not graph_returns_tuple(model_):
@@ -2291,6 +2295,7 @@ def compile_fx(
                     cudagraphs=cudagraphs,
                     boxed_forward_device_index=forward_device,
                     ignore_shape_env=ignore_shape_env,
+                    specialization=specialization,
                 )(model_, example_inputs_)
             except ShortenTraceback as e:
                 # We will also shorten the traceback inside dynamo.
