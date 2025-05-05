@@ -5457,7 +5457,7 @@ class TestLearnableBiases(InductorTestCase):
             out_eager, out_compiled, out_gold, (bias,), names=["out", "bias"]
         )
 
-    def test_flex_attention_with_dynamic_max_autotune(self):
+    def _test_flex_attention_with_dynamic_max_autotune(self):
         query = torch.randn(2, 16, 512, 64, device=self.device)
         key = torch.randn(2, 16, 512, 64, device=self.device)
         value = torch.randn(2, 16, 512, 64, device=self.device)
@@ -5494,6 +5494,13 @@ class TestLearnableBiases(InductorTestCase):
         self.assertEqual(
             out.shape, query.shape, f"Expected shape {query.shape}, got {out.shape}"
         )
+
+    def test_flex_attention_with_dynamic_max_autotune(self):
+        self._test_flex_attention_with_dynamic_max_autotune()
+
+    @torch._inductor.config.patch("graph_partition", True)
+    def test_flex_attention_with_dynamic_max_autotune_graph_partition(self):
+        self._test_flex_attention_with_dynamic_max_autotune()
 
     def test_inspect_bug(self):
         # https://github.com/pytorch/pytorch/issues/139374
