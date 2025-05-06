@@ -4,6 +4,7 @@
 #include <c10/xpu/XPUFunctions.h>
 #include <level_zero/ze_api.h>
 #include <sycl/sycl.hpp>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
