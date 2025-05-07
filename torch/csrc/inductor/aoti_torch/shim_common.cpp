@@ -1094,8 +1094,8 @@ void aoti_torch_save_tensor_handle(
         << tmp_folder << '\n';
 
     std::error_code ec{};
-    std::filesystem::create_directories(tmp_folder, ec);
-    if (!std::filesystem::is_directory(tmp_folder)) {
+    if (std::filesystem::create_directories(tmp_folder, ec) &&
+        !std::filesystem::is_directory(tmp_folder)) {
       std::cout << "aoti_torch_save_tensor_handle: Error creating directory: "
                 << tmp_folder << " error:" << ec.message() << '\n';
       return;
