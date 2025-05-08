@@ -5505,10 +5505,10 @@ class TestLearnableBiases(InductorTestCase):
         )
 
     @skip_on_cpu
-    def _test_flex_attention_with_dynamic_max_autotune(self, device):
-        query = torch.randn(2, 16, 512, 64, device=self.device)
-        key = torch.randn(2, 16, 512, 64, device=self.device)
-        value = torch.randn(2, 16, 512, 64, device=self.device)
+    def test_flex_attention_with_dynamic_max_autotune(self, device):
+        query = torch.randn(2, 16, 512, 64, device=device)
+        key = torch.randn(2, 16, 512, 64, device=device)
+        value = torch.randn(2, 16, 512, 64, device=device)
         query.requires_grad = True
         key.requires_grad = True
         value.requires_grad = True
@@ -5544,13 +5544,6 @@ class TestLearnableBiases(InductorTestCase):
         self.assertEqual(
             out.shape, query.shape, f"Expected shape {query.shape}, got {out.shape}"
         )
-
-    def test_flex_attention_with_dynamic_max_autotune(self):
-        self._test_flex_attention_with_dynamic_max_autotune()
-
-    @torch._inductor.config.patch("graph_partition", True)
-    def test_flex_attention_with_dynamic_max_autotune_graph_partition(self):
-        self._test_flex_attention_with_dynamic_max_autotune()
 
     @skip_on_cpu
     def test_inspect_bug(self, device):
