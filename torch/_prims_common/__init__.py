@@ -258,6 +258,30 @@ def check_all_strides(
     return _check_strides_helper(a, b, only_cuda=only_cuda, significant_only=False)
 
 
+def is_known_contiguous(a: TensorLikeType) -> bool:
+    """
+    This function will return True if the tensor is contiguous, and False if the
+    its not or if we can't determine if it is contiguous due to unbacked symbols
+    (it could be either in that case based on the actual runtime data).
+    """
+    from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
+
+    if guard_or_false(a.numel() == 0):
+        return True
+
+    expected_stride = 1
+    for x, y in reversed(tuple(zip(a.shape, a.stride()))):
+        # Skips checking strides when a dimension has length 1
+        if guard_or_false(x == 1):
+            continue
+
+        if guard_or_true(y != expected_stride):
+            return False
+        expected_stride = expected_stride * x
+
+    return True
+
+
 # This function is equivalent to compute_contiguous() from TensorImpl.cpp
 def is_contiguous(a: TensorLikeType) -> bool:
     """
@@ -307,6 +331,29 @@ def is_channels_last_contiguous_2d(a: Tensor) -> bool:
     return True
 
 
+# similar to is_channels_last_contiguous_2d but return false on data dependency.
+def is_known_channels_last_contiguous_2d(a: Tensor) -> bool:
+    # NHWC or not channels last 2D contiguous
+    if a.ndim != 4:
+        return False
+
+    from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
+
+    expected_stride = 1
+    for idx in (1, 3, 2, 0):
+        length = a.shape[idx]
+        if guard_or_false(length == 1):
+            continue
+
+        stride = a.stride()[idx]
+        if guard_or_true(stride != expected_stride):
+            return False
+
+        expected_stride *= length
+
+    return True
+
+
 def is_channels_last_contiguous_3d(a: Tensor) -> bool:
     # NDHWC or not channels last 3D contiguous
     if a.ndim != 5:
@@ -322,6 +369,29 @@ def is_channels_last_contiguous_3d(a: Tensor) -> bool:
 
         stride = a.stride()[idx]
         if guard_size_oblivious(stride != expected_stride):
+            return False
+
+        expected_stride *= length
+
+    return True
+
+
+# similar to is_channels_last_contiguous_3d but return false on data dependency.
+def is_known_channels_last_contiguous_3d(a: Tensor) -> bool:
+    # NDHWC or not channels last 3D contiguous
+    if a.ndim != 5:
+        return False
+
+    from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
+
+    expected_stride = 1
+    for idx in (1, 4, 3, 2, 0):
+        length = a.shape[idx]
+        if guard_or_false(length == 1):
+            continue
+
+        stride = a.stride()[idx]
+        if guard_or_true(stride != expected_stride):
             return False
 
         expected_stride *= length
@@ -362,6 +432,25 @@ def is_contiguous_for_memory_format(  # type: ignore[return]
     )
 
 
+# similar to is_contiguous_for_memory_format but return false on data dependency.
+def is_known_contiguous_for_memory_format(  # type: ignore[return]
+    a: Tensor, *, memory_format: torch.memory_format
+) -> bool:
+    validate_memory_format(memory_format)
+
+    if memory_format == torch.contiguous_format:
+        return is_known_contiguous(a)
+    if memory_format == torch.channels_last:
+        return is_known_channels_last_contiguous_2d(a)
+    if memory_format == torch.channels_last_3d:
+        return is_known_channels_last_contiguous_3d(a)
+
+    torch._check(
+        False,
+        lambda: f"is_contiguous received unsupported memory format {memory_format}",
+    )
+
+
 # NOTE: that tensors with no elements and channels last is ???
 def is_channels_last_contiguous(a: Tensor) -> bool:
     """
@@ -377,6 +466,13 @@ def is_channels_last_contiguous(a: Tensor) -> bool:
         for example.
     """
     return is_channels_last_contiguous_2d(a) or is_channels_last_contiguous_3d(a)
+
+
+# similar to is_channels_last_contiguous but return false on data dependency.
+def is_known_channels_last_contiguous(a: Tensor) -> bool:
+    return is_known_channels_last_contiguous_2d(
+        a
+    ) or is_known_channels_last_contiguous_3d(a)
 
 
 def is_non_overlapping_and_dense(a: Tensor) -> bool:
